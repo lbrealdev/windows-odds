@@ -25,19 +25,19 @@ powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1
 powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -SkipUpdateSearch
 
 # Write the results somewhere else
-powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -OutputPath C:\Temp
+powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -OutputPath C:\Temp\machine-info
 ```
 
 Without git, download the script from GitHub and run the same command from the folder it is in. `-ExecutionPolicy Bypass` applies only to that run and does not change the system policy.
 
 ### Parameters
 
-- `-OutputPath`: folder where the results folder is created. Defaults to the script's folder.
+- `-OutputPath`: folder where the results are written. Defaults to `machine-info-<COMPUTERNAME>-<timestamp>` next to the script.
 - `-SkipUpdateSearch`: skip the online search for pending Windows updates.
 
 ### Output
 
-A folder named `machine-info-<COMPUTERNAME>-<timestamp>` containing:
+The output folder contains:
 
 - `machine-info.json`: all collected data
 - `machine-info.txt`: human-readable summary
