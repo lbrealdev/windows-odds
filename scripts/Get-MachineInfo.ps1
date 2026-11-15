@@ -87,7 +87,24 @@ function Write-StatusLine {
 
 # Win32_QuickFixEngineering.InstalledOn is a locale-dependent string. Get-HotFix
 # wraps it in a ScriptProperty that calls DateTime.Parse and throws on non-US
-# dates. Read the raw CIM value and parse it without using that property.
+# dates. Read psbase.Properties (ManagementObject) or CimInstanceProperties, not
+# the ScriptProperty.
+function Get-HotFixInstalledOnRaw {
+    param($HotFix)
+    if ($null -eq $HotFix) { return $null }
+    try {
+        $raw = $HotFix.psbase.Properties['InstalledOn'].Value
+        if ($raw -is [datetime]) { return $raw }
+        if ($null -ne $raw -and "$raw".Trim() -ne '') { return $raw }
+    } catch { $null = $_ }
+    try {
+        $raw = $HotFix.CimInstanceProperties['InstalledOn'].Value
+        if ($raw -is [datetime]) { return $raw }
+        if ($null -ne $raw -and "$raw".Trim() -ne '') { return $raw }
+    } catch { $null = $_ }
+    $null
+}
+
 function ConvertTo-HotFixInstalledOn {
     param($Value)
     try {
@@ -99,10 +116,7 @@ function ConvertTo-HotFixInstalledOn {
         $parsed = [datetime]::MinValue
         $invariant = [System.Globalization.CultureInfo]::InvariantCulture
         $styles = [System.Globalization.DateTimeStyles]::AllowWhiteSpaces
-        if ([datetime]::TryParse($text, $invariant, $styles, [ref]$parsed)) {
-            return $parsed
-        }
-        foreach ($fmt in @('M/d/yyyy', 'd/M/yyyy', 'yyyyMMdd')) {
+        foreach ($fmt in @('M/d/yyyy', 'MM/dd/yyyy', 'yyyyMMdd')) {
             if ([datetime]::TryParseExact($text, $fmt, $invariant, $styles, [ref]$parsed)) {
                 return $parsed
             }
@@ -654,16 +668,10 @@ Add-Section 'Security' {
 
 Add-Section 'InstalledUpdates' {
     $items = foreach ($hf in @(Get-HotFix)) {
-        $raw = $null
-        try {
-            $raw = $hf.CimInstanceProperties['InstalledOn'].Value
-        } catch {
-            $raw = $null
-        }
         [ordered]@{
             Id          = $hf.HotFixID
             Description = $hf.Description
-            InstalledOn = ConvertTo-HotFixInstalledOn $raw
+            InstalledOn = ConvertTo-HotFixInstalledOn (Get-HotFixInstalledOnRaw $hf)
         }
     }
     , @($items | Sort-Object { $_['InstalledOn'] } -Descending)
