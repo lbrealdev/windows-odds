@@ -49,7 +49,7 @@ The output contains serial numbers and the Windows product key. Do not commit or
 
 ## SetupWin.ps1
 
-Installs the winget packages listed in `scripts/winget-apps.txt` (next to the script). Already installed packages are skipped. A failure for one package does not stop the rest. Elevation is not required for most apps.
+Installs the winget packages listed in `scripts/winget-apps.txt` (next to the script). Already installed packages are skipped. A failure for one package does not stop the rest. Elevation is not required for most apps. Each package is reported on one line; winget's own output is shown only if an install fails.
 
 ### Requirements
 
