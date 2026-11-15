@@ -19,5 +19,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\<Script>.ps1
 
 | Script | Shell | What it does | Changes the system | Admin | Docs |
 | --- | --- | --- | --- | --- | --- |
-| Get-MachineInfo.ps1 | PowerShell | Read-only inventory of a Windows machine: hardware, serial numbers, firmware, Windows edition and build, license and activation, disks and battery health, TPM/BitLocker/Defender, installed and pending updates, drivers and installed programs. | read-only | required | [docs/Get-MachineInfo.md](docs/Get-MachineInfo.md) |
-| SetupWin.ps1 | PowerShell | Installs the winget packages listed in `scripts/winget-apps.txt`. Already installed packages are skipped. A failure for one package does not stop the rest. | installs apps | not required for most apps | [docs/SetupWin.md](docs/SetupWin.md) |
+| Get-MachineInfo.ps1 | PowerShell | Read-only machine inventory | read-only | required | [docs/Get-MachineInfo.md](docs/Get-MachineInfo.md) |
+| SetupWin.ps1 | PowerShell | Install apps from a winget list | installs apps | not required for most apps | [docs/SetupWin.md](docs/SetupWin.md) |
