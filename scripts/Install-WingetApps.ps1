@@ -14,7 +14,7 @@
     One winget package ID per line. Blank lines and # comments are ignored.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\scripts\SetupWin.ps1
+    powershell -ExecutionPolicy Bypass -File .\scripts\Install-WingetApps.ps1
 #>
 [CmdletBinding()]
 param(
