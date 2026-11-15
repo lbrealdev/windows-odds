@@ -16,13 +16,18 @@
 .PARAMETER SkipUpdateSearch
     Skip the online search for pending Windows updates, which can take minutes.
 
+.PARAMETER IncludeProductKey
+    Include the full OEM firmware product key in the output. By default only
+    whether a firmware key is present and its last five characters are recorded.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1
 #>
 [CmdletBinding()]
 param(
     [string]$OutputPath,
-    [switch]$SkipUpdateSearch
+    [switch]$SkipUpdateSearch,
+    [switch]$IncludeProductKey
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,7 +54,11 @@ function Add-Section {
 function Get-Cim {
     [CmdletBinding()]
     param([string]$Class, [string]$Namespace = 'root/cimv2', [string]$Filter)
-    $params = @{ ClassName = $Class; Namespace = $Namespace }
+    $params = @{
+        ClassName   = $Class
+        Namespace   = $Namespace
+        ErrorAction = $ErrorActionPreference
+    }
     if ($Filter) { $params.Filter = $Filter }
     Get-CimInstance @params
 }
@@ -120,19 +129,30 @@ Add-Section 'License' {
         4 = 'NonGenuineGrace'; 5 = 'Notification'; 6 = 'ExtendedGrace'
     }
     $products = Get-Cim SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL AND Name LIKE 'Windows%'"
-    [ordered]@{
-        OEMProductKeyInFirmware = $svc.OA3xOriginalProductKey
-        OEMKeyDescription       = $svc.OA3xOriginalProductKeyDescription
-        Products                = @($products | ForEach-Object {
-            [ordered]@{
-                Name              = $_.Name
-                Description       = $_.Description
-                Channel           = $_.ProductKeyChannel
-                PartialProductKey = $_.PartialProductKey
-                Status            = $statusNames[[int]$_.LicenseStatus]
-            }
-        })
+    $oemKey = $svc.OA3xOriginalProductKey
+    $license = [ordered]@{}
+    if ($IncludeProductKey) {
+        $license.OEMProductKeyInFirmware = $oemKey
+    } else {
+        $license.OEMProductKeyPresent = -not [string]::IsNullOrEmpty($oemKey)
+        $license.OEMProductKeyLast5 = if ([string]::IsNullOrEmpty($oemKey)) {
+            $null
+        } else {
+            $keyText = "$oemKey"
+            if ($keyText.Length -le 5) { $keyText } else { $keyText.Substring($keyText.Length - 5) }
+        }
     }
+    $license.OEMKeyDescription = $svc.OA3xOriginalProductKeyDescription
+    $license.Products = @($products | ForEach-Object {
+        [ordered]@{
+            Name              = $_.Name
+            Description       = $_.Description
+            Channel           = $_.ProductKeyChannel
+            PartialProductKey = $_.PartialProductKey
+            Status            = $statusNames[[int]$_.LicenseStatus]
+        }
+    })
+    $license
 }
 
 Add-Section 'Processor' {
@@ -238,10 +258,10 @@ Add-Section 'Network' {
 }
 
 Add-Section 'Battery' {
-    $batteries = @(Get-Cim Win32_Battery)
+    $batteries = @(try { Get-Cim Win32_Battery -ErrorAction SilentlyContinue } catch { @() })
     if (-not $batteries) { return 'No battery' }
-    $static = @(Get-Cim BatteryStaticData -Namespace 'root/wmi' -ErrorAction SilentlyContinue)
-    $full = @(Get-Cim BatteryFullChargedCapacity -Namespace 'root/wmi' -ErrorAction SilentlyContinue)
+    $static = @(try { Get-Cim BatteryStaticData -Namespace 'root/wmi' -ErrorAction SilentlyContinue } catch { @() })
+    $full = @(try { Get-Cim BatteryFullChargedCapacity -Namespace 'root/wmi' -ErrorAction SilentlyContinue } catch { @() })
     $batteryReport = Join-Path $OutputPath 'battery-report.html'
     powercfg /batteryreport /output "$batteryReport" | Out-Null
     [ordered]@{
@@ -257,18 +277,39 @@ Add-Section 'Battery' {
 }
 
 Add-Section 'Security' {
-    $tpm = Get-Tpm
-    $tpmVersion = (Get-Cim Win32_Tpm -Namespace 'root/cimv2/Security/MicrosoftTpm').SpecVersion
-    $bitlocker = @(Get-BitLockerVolume -ErrorAction SilentlyContinue | ForEach-Object {
-        [ordered]@{
-            Mount      = $_.MountPoint
-            Protection = "$($_.ProtectionStatus)"
-            Status     = "$($_.VolumeStatus)"
-            Method     = "$($_.EncryptionMethod)"
-        }
-    })
-    $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
-    [ordered]@{
+    $tpm = $null
+    $tpmVersion = $null
+    $tpmError = $null
+    try {
+        $tpm = Get-Tpm
+        $tpmVersion = (Get-Cim Win32_Tpm -Namespace 'root/cimv2/Security/MicrosoftTpm').SpecVersion
+    } catch {
+        $tpmError = $_.Exception.Message
+    }
+
+    $bitlocker = $null
+    try {
+        $bitlocker = @(Get-BitLockerVolume -ErrorAction SilentlyContinue | ForEach-Object {
+            [ordered]@{
+                Mount      = $_.MountPoint
+                Protection = "$($_.ProtectionStatus)"
+                Status     = "$($_.VolumeStatus)"
+                Method     = "$($_.EncryptionMethod)"
+            }
+        })
+    } catch {
+        $bitlocker = [ordered]@{ Error = $_.Exception.Message }
+    }
+
+    $defender = $null
+    $defenderError = $null
+    try {
+        $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
+    } catch {
+        $defenderError = $_.Exception.Message
+    }
+
+    $sec = [ordered]@{
         TpmPresent        = $tpm.TpmPresent
         TpmReady          = $tpm.TpmReady
         TpmVersion        = $tpmVersion
@@ -277,6 +318,9 @@ Add-Section 'Security' {
         DefenderEnabled   = $defender.AntivirusEnabled
         DefenderSignature = $defender.AntivirusSignatureVersion
     }
+    if ($tpmError) { $sec.TpmError = $tpmError }
+    if ($defenderError) { $sec.DefenderError = $defenderError }
+    $sec
 }
 
 Add-Section 'InstalledUpdates' {
