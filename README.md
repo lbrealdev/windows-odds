@@ -1,7 +1,7 @@
 # windows-odds
 Odds and ends for Windows. PowerShell scripts for when you have to touch it.
 
-## Get-MachineInfo.ps1
+## scripts/Get-MachineInfo.ps1
 
 Read-only inventory of a Windows machine: hardware, serial numbers, firmware, Windows edition and build, license and activation, disks and battery health, TPM/BitLocker/Defender, installed and pending updates, drivers and installed programs.
 
@@ -19,16 +19,16 @@ git clone https://github.com/lbrealdev/windows-odds.git
 cd windows-odds
 
 # Full inventory (the pending update search can take a few minutes)
-powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\Get-MachineInfo.ps1
 
 # Skip the pending update search
-powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -SkipUpdateSearch
+powershell -ExecutionPolicy Bypass -File .\scripts\Get-MachineInfo.ps1 -SkipUpdateSearch
 
 # Include the full OEM firmware product key
-powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -IncludeProductKey
+powershell -ExecutionPolicy Bypass -File .\scripts\Get-MachineInfo.ps1 -IncludeProductKey
 
 # Write the results somewhere else
-powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -OutputPath C:\Temp\machine-info
+powershell -ExecutionPolicy Bypass -File .\scripts\Get-MachineInfo.ps1 -OutputPath C:\Temp\machine-info
 ```
 
 Without git, download the script from GitHub and run the same command from the folder it is in. `-ExecutionPolicy Bypass` applies only to that run and does not change the system policy.
