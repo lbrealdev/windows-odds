@@ -87,7 +87,24 @@ function Write-StatusLine {
 
 # Win32_QuickFixEngineering.InstalledOn is a locale-dependent string. Get-HotFix
 # wraps it in a ScriptProperty that calls DateTime.Parse and throws on non-US
-# dates. Read the raw CIM value and parse it without using that property.
+# dates. Read psbase.Properties (ManagementObject) or CimInstanceProperties, not
+# the ScriptProperty.
+function Get-HotFixInstalledOnRaw {
+    param($HotFix)
+    if ($null -eq $HotFix) { return $null }
+    try {
+        $raw = $HotFix.psbase.Properties['InstalledOn'].Value
+        if ($raw -is [datetime]) { return $raw }
+        if ($null -ne $raw -and "$raw".Trim() -ne '') { return $raw }
+    } catch { $null = $_ }
+    try {
+        $raw = $HotFix.CimInstanceProperties['InstalledOn'].Value
+        if ($raw -is [datetime]) { return $raw }
+        if ($null -ne $raw -and "$raw".Trim() -ne '') { return $raw }
+    } catch { $null = $_ }
+    $null
+}
+
 function ConvertTo-HotFixInstalledOn {
     param($Value)
     try {
@@ -99,10 +116,7 @@ function ConvertTo-HotFixInstalledOn {
         $parsed = [datetime]::MinValue
         $invariant = [System.Globalization.CultureInfo]::InvariantCulture
         $styles = [System.Globalization.DateTimeStyles]::AllowWhiteSpaces
-        if ([datetime]::TryParse($text, $invariant, $styles, [ref]$parsed)) {
-            return $parsed
-        }
-        foreach ($fmt in @('M/d/yyyy', 'd/M/yyyy', 'yyyyMMdd')) {
+        foreach ($fmt in @('M/d/yyyy', 'MM/dd/yyyy', 'yyyyMMdd')) {
             if ([datetime]::TryParseExact($text, $fmt, $invariant, $styles, [ref]$parsed)) {
                 return $parsed
             }
@@ -176,6 +190,205 @@ function Get-Cim {
     }
     if ($Filter) { $params.Filter = $Filter }
     Get-CimInstance @params
+}
+
+function ConvertFrom-WmiByteString {
+    param($Codes)
+    if ($null -eq $Codes) { return $null }
+    $sb = New-Object System.Text.StringBuilder
+    if ($Codes -is [string]) {
+        foreach ($ch in $Codes.ToCharArray()) {
+            if ([int][char]$ch -ne 0) { [void]$sb.Append($ch) }
+        }
+    } else {
+        foreach ($code in @($Codes)) {
+            if ($null -eq $code) { continue }
+            $n = [int]$code
+            if ($n -ne 0) { [void]$sb.Append([char]$n) }
+        }
+    }
+    $text = $sb.ToString().Trim()
+    if ($text -eq '') { return $null }
+    $text
+}
+
+function Resolve-MemoryManufacturer {
+    param($Raw)
+    $rawText = if ($null -eq $Raw) { '' } else { "$Raw".Trim() }
+    $jedec = @{
+        '80AD' = 'SK Hynix'
+        '80CE' = 'Samsung'
+        '802C' = 'Micron'
+        '0198' = 'Kingston'
+        '859B' = 'Crucial'
+        '029E' = 'Corsair'
+        '04CD' = 'G.Skill'
+        '04CB' = 'ADATA'
+        '830B' = 'Nanya'
+        '0443' = 'Ramaxel'
+    }
+    $name = $rawText
+    if ($rawText -match '^[0-9A-Fa-f]{4}') {
+        $code = $rawText.Substring(0, 4).ToUpperInvariant()
+        if ($jedec.ContainsKey($code)) { $name = $jedec[$code] }
+    }
+    [ordered]@{
+        Manufacturer    = $name
+        ManufacturerRaw = $rawText
+    }
+}
+
+function Select-UninstallEntry {
+    param($Records)
+    $seen = @{}
+    $apps = foreach ($app in @($Records)) {
+        $name = $app.DisplayName
+        if ([string]::IsNullOrWhiteSpace([string]$name)) { continue }
+        if ($app.SystemComponent) { continue }
+        $version = $app.DisplayVersion
+        $key = "$name|$version"
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [ordered]@{
+            Name      = $name
+            Version   = $version
+            Publisher = $app.Publisher
+        }
+    }
+    , @($apps | Sort-Object { $_['Name'] })
+}
+
+function Get-DesignCapacityFromBatteryReportXml {
+    param([string]$XmlPath)
+    if (-not $XmlPath -or -not (Test-Path -LiteralPath $XmlPath)) { return $null }
+    try {
+        $xml = New-Object System.Xml.XmlDocument
+        $xml.Load($XmlPath)
+        $nodes = @($xml.SelectNodes('//DesignCapacity'))
+        foreach ($node in $nodes) {
+            $text = "$($node.InnerText)".Trim()
+            if ($text -eq '') { continue }
+            $n = 0L
+            if ([int64]::TryParse($text, [ref]$n) -and $n -gt 0) { return $n }
+        }
+    } catch {
+        return $null
+    }
+    $null
+}
+
+function Get-MatchedBatteryCapacity {
+    param($StaticRows, $FullRows, [string]$XmlPath)
+    $design = $null
+    $fullCap = $null
+    foreach ($s in @($StaticRows)) {
+        if ($null -eq $s) { continue }
+        $rowDesign = $s.DesignedCapacity
+        $match = @(
+            @($FullRows) | Where-Object { $_ -and $_.InstanceName -eq $s.InstanceName }
+        )
+        if ($match.Count -gt 0) {
+            $fullCap = $match[0].FullChargedCapacity
+            if ($rowDesign) { $design = $rowDesign }
+            if ($design -and $fullCap) { break }
+        } elseif ($rowDesign -and -not $design) {
+            $design = $rowDesign
+        }
+    }
+    if ($null -eq $fullCap) {
+        foreach ($f in @($FullRows)) {
+            if ($f -and $f.FullChargedCapacity) {
+                $fullCap = $f.FullChargedCapacity
+                break
+            }
+        }
+    }
+    if (-not $design) {
+        $fromXml = Get-DesignCapacityFromBatteryReportXml $XmlPath
+        if ($fromXml) { $design = $fromXml }
+    }
+    if (-not $design) { $design = $null }
+    if (-not $fullCap) { $fullCap = $null }
+    $health = $null
+    if ($null -ne $design -and $null -ne $fullCap) {
+        $health = [math]::Round(100 * $fullCap / $design, 1)
+    }
+    [ordered]@{
+        DesignCapacityMWh     = $design
+        FullChargeCapacityMWh = $fullCap
+        HealthPercent         = $health
+    }
+}
+
+function ConvertTo-ReportJson {
+    param($Value, [int]$Depth = 8, [int]$Level = 0)
+    $pad = ' ' * (4 * $Level)
+    $inner = ' ' * (4 * ($Level + 1))
+
+    if ($null -eq $Value) { return 'null' }
+
+    $base = $Value
+    if ($Value -is [psobject] -and $null -ne $Value.PSObject.BaseObject) {
+        $base = $Value.PSObject.BaseObject
+    }
+
+    if ($base -is [datetime]) {
+        return (ConvertTo-Json -InputObject $base.ToString('o'))
+    }
+    if ($base -is [bool]) {
+        if ($base) { return 'true' } else { return 'false' }
+    }
+    if ($base -is [char]) {
+        return (ConvertTo-ReportJson -Value ([string]$base) -Depth $Depth -Level $Level)
+    }
+    if ($base -is [string]) {
+        return (ConvertTo-Json -InputObject $base)
+    }
+    $isNumber = $base -is [byte] -or $base -is [sbyte] -or
+        $base -is [int16] -or $base -is [uint16] -or
+        $base -is [int] -or $base -is [uint32] -or
+        $base -is [long] -or $base -is [uint64] -or
+        $base -is [decimal] -or $base -is [double] -or $base -is [single]
+    if ($isNumber) {
+        return (ConvertTo-Json -InputObject $base)
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        if ($Depth -le 0) { return (ConvertTo-Json -InputObject "$Value") }
+        $keys = @($Value.Keys)
+        if ($keys.Count -eq 0) { return '{}' }
+        $parts = foreach ($key in $keys) {
+            $k = ConvertTo-Json -InputObject ([string]$key)
+            $v = ConvertTo-ReportJson -Value $Value[$key] -Depth ($Depth - 1) -Level ($Level + 1)
+            '{0}{1}: {2}' -f $inner, $k, $v
+        }
+        return ('{{{0}{1}{0}{2}}}' -f "`n", ($parts -join ",`n"), $pad)
+    }
+
+    if ($base -is [System.Collections.IEnumerable]) {
+        if ($Depth -le 0) { return (ConvertTo-Json -InputObject "$Value") }
+        $items = New-Object System.Collections.ArrayList
+        foreach ($item in $Value) { [void]$items.Add($item) }
+        if ($items.Count -eq 0) { return '[]' }
+        $parts = foreach ($item in $items) {
+            '{0}{1}' -f $inner, (ConvertTo-ReportJson -Value $item -Depth ($Depth - 1) -Level ($Level + 1))
+        }
+        return ('[{0}{1}{0}{2}]' -f "`n", ($parts -join ",`n"), $pad)
+    }
+
+    $noteProps = @($Value.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' })
+    if ($noteProps.Count -gt 0) {
+        $map = [ordered]@{}
+        foreach ($p in $noteProps) { $map[$p.Name] = $p.Value }
+        return (ConvertTo-ReportJson -Value $map -Depth $Depth -Level $Level)
+    }
+
+    ConvertTo-Json -InputObject "$Value"
+}
+
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Text)
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding $false))
 }
 
 $scriptName = Split-Path -Leaf $PSCommandPath
@@ -274,7 +487,7 @@ Add-Section 'License' {
 }
 
 Add-Section 'Processor' {
-    @(Get-Cim Win32_Processor | ForEach-Object {
+    ,@(Get-Cim Win32_Processor | ForEach-Object {
         [ordered]@{
             Name              = $_.Name.Trim()
             Cores             = $_.NumberOfCores
@@ -293,20 +506,22 @@ Add-Section 'Memory' {
         Slots       = ($array | Measure-Object MemoryDevices -Sum).Sum
         MaxGB       = [math]::Round(($array | Measure-Object MaxCapacityEx -Sum).Sum / 1MB, 2)
         Modules     = @($modules | ForEach-Object {
+            $maker = Resolve-MemoryManufacturer $_.Manufacturer
             [ordered]@{
-                Slot         = $_.DeviceLocator
-                CapacityGB   = [math]::Round($_.Capacity / 1GB, 2)
-                SpeedMHz     = $_.ConfiguredClockSpeed
-                Manufacturer = $_.Manufacturer
-                PartNumber   = "$($_.PartNumber)".Trim()
-                SerialNumber = $_.SerialNumber
+                Slot            = $_.DeviceLocator
+                CapacityGB      = [math]::Round($_.Capacity / 1GB, 2)
+                SpeedMHz        = $_.ConfiguredClockSpeed
+                Manufacturer    = $maker.Manufacturer
+                ManufacturerRaw = $maker.ManufacturerRaw
+                PartNumber      = "$($_.PartNumber)".Trim()
+                SerialNumber    = $_.SerialNumber
             }
         })
     }
 }
 
 Add-Section 'Disks' {
-    @(Get-PhysicalDisk | ForEach-Object {
+    ,@(Get-PhysicalDisk | ForEach-Object {
         $rel = $_ | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
         [ordered]@{
             Model           = $_.FriendlyName
@@ -324,13 +539,13 @@ Add-Section 'Disks' {
 }
 
 Add-Section 'Partitions' {
-    @(Get-Partition | ForEach-Object {
+    ,@(Get-Partition | ForEach-Object {
         $vol = $_ | Get-Volume -ErrorAction SilentlyContinue
         [ordered]@{
             Disk        = $_.DiskNumber
             Partition   = $_.PartitionNumber
             Type        = $_.Type
-            DriveLetter = "$($_.DriveLetter)".Trim()
+            DriveLetter = ConvertFrom-WmiByteString $_.DriveLetter
             SizeGB      = [math]::Round($_.Size / 1GB, 2)
             Label       = $vol.FileSystemLabel
             FileSystem  = $vol.FileSystem
@@ -340,7 +555,7 @@ Add-Section 'Partitions' {
 }
 
 Add-Section 'Graphics' {
-    @(Get-Cim Win32_VideoController | ForEach-Object {
+    ,@(Get-Cim Win32_VideoController | ForEach-Object {
         [ordered]@{
             Name          = $_.Name
             DriverVersion = $_.DriverVersion
@@ -351,19 +566,18 @@ Add-Section 'Graphics' {
 }
 
 Add-Section 'Monitors' {
-    $decode = { param($codes) -join ($codes | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ }) }
-    @(Get-Cim WmiMonitorID -Namespace 'root/wmi' | ForEach-Object {
+    ,@(Get-Cim WmiMonitorID -Namespace 'root/wmi' | ForEach-Object {
         [ordered]@{
-            Manufacturer = & $decode $_.ManufacturerName
-            Model        = & $decode $_.UserFriendlyName
-            SerialNumber = & $decode $_.SerialNumberID
+            Manufacturer = ConvertFrom-WmiByteString $_.ManufacturerName
+            Model        = ConvertFrom-WmiByteString $_.UserFriendlyName
+            SerialNumber = ConvertFrom-WmiByteString $_.SerialNumberID
             Year         = $_.YearOfManufacture
         }
     })
 }
 
 Add-Section 'Network' {
-    @(Get-NetAdapter -IncludeHidden:$false | ForEach-Object {
+    ,@(Get-NetAdapter -IncludeHidden:$false | ForEach-Object {
         [ordered]@{
             Name        = $_.Name
             Description = $_.InterfaceDescription
@@ -378,18 +592,29 @@ Add-Section 'Network' {
 Add-Section 'Battery' {
     $batteries = @(try { Get-Cim Win32_Battery -ErrorAction SilentlyContinue } catch { @() })
     if (-not $batteries) { return 'No battery' }
-    $static = @(try { Get-Cim BatteryStaticData -Namespace 'root/wmi' -ErrorAction SilentlyContinue } catch { @() })
+    $static = @(try {
+        Get-CimInstance -Namespace root/wmi -ClassName BatteryStaticData -Property DesignedCapacity,InstanceName -ErrorAction Stop
+    } catch {
+        try { Get-Cim BatteryStaticData -Namespace 'root/wmi' -ErrorAction Stop } catch { @() }
+    })
     $full = @(try { Get-Cim BatteryFullChargedCapacity -Namespace 'root/wmi' -ErrorAction SilentlyContinue } catch { @() })
     $batteryReport = Join-Path $OutputPath 'battery-report.html'
     powercfg /batteryreport /output "$batteryReport" | Out-Null
+    $cap = Get-MatchedBatteryCapacity -StaticRows $static -FullRows $full
+    if (-not $cap.DesignCapacityMWh) {
+        $xmlPath = Join-Path $OutputPath 'battery-report.xml'
+        try { powercfg /batteryreport /xml /output "$xmlPath" | Out-Null } catch { $null = $_ }
+        $cap = Get-MatchedBatteryCapacity -StaticRows $static -FullRows $full -XmlPath $xmlPath
+        if (Test-Path -LiteralPath $xmlPath) {
+            Remove-Item -LiteralPath $xmlPath -Force -ErrorAction SilentlyContinue
+        }
+    }
     [ordered]@{
         Name                   = $batteries.Name
         ChargePercent          = $batteries.EstimatedChargeRemaining
-        DesignCapacityMWh      = $static.DesignedCapacity
-        FullChargeCapacityMWh  = $full.FullChargedCapacity
-        HealthPercent          = if ($static -and $full) {
-            [math]::Round(100 * $full[0].FullChargedCapacity / $static[0].DesignedCapacity, 1)
-        } else { $null }
+        DesignCapacityMWh      = $cap.DesignCapacityMWh
+        FullChargeCapacityMWh  = $cap.FullChargeCapacityMWh
+        HealthPercent          = $cap.HealthPercent
         Report                 = 'battery-report.html'
     }
 }
@@ -443,26 +668,20 @@ Add-Section 'Security' {
 
 Add-Section 'InstalledUpdates' {
     $items = foreach ($hf in @(Get-HotFix)) {
-        $raw = $null
-        try {
-            $raw = $hf.CimInstanceProperties['InstalledOn'].Value
-        } catch {
-            $raw = $null
-        }
         [ordered]@{
             Id          = $hf.HotFixID
             Description = $hf.Description
-            InstalledOn = ConvertTo-HotFixInstalledOn $raw
+            InstalledOn = ConvertTo-HotFixInstalledOn (Get-HotFixInstalledOnRaw $hf)
         }
     }
-    @($items | Sort-Object { $_['InstalledOn'] } -Descending)
+    , @($items | Sort-Object { $_['InstalledOn'] } -Descending)
 }
 
 Add-Section 'PendingUpdates' {
     if ($SkipUpdateSearch) { return 'Skipped' }
     $searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
     $result = $searcher.Search('IsInstalled=0 and IsHidden=0')
-    @($result.Updates | ForEach-Object {
+    ,@($result.Updates | ForEach-Object {
         [ordered]@{
             Title    = $_.Title
             KB       = ($_.KBArticleIDs | ForEach-Object { "KB$_" }) -join ', '
@@ -473,7 +692,7 @@ Add-Section 'PendingUpdates' {
 }
 
 Add-Section 'Drivers' {
-    @(Get-Cim Win32_PnPSignedDriver -Filter 'DeviceName IS NOT NULL' |
+    ,@(Get-Cim Win32_PnPSignedDriver -Filter 'DeviceName IS NOT NULL' |
         Sort-Object DeviceClass, DeviceName | ForEach-Object {
             [ordered]@{
                 Class    = $_.DeviceClass
@@ -489,20 +708,14 @@ Add-Section 'InstalledApps' {
     $keys = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        'HKCU:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
     )
-    @(Get-ItemProperty $keys -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -and -not $_.SystemComponent } |
-        Sort-Object DisplayName -Unique | ForEach-Object {
-            [ordered]@{
-                Name      = $_.DisplayName
-                Version   = $_.DisplayVersion
-                Publisher = $_.Publisher
-            }
-        })
+    ,(Select-UninstallEntry (Get-ItemProperty $keys -ErrorAction SilentlyContinue))
 }
 
 $jsonPath = Join-Path $OutputPath 'machine-info.json'
-$report | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonPath -Encoding UTF8
+Write-Utf8NoBom $jsonPath (ConvertTo-ReportJson -Value $report -Depth 8)
 
 $summary = foreach ($name in $report.Keys) {
     "==== $name ===="
@@ -516,7 +729,7 @@ $summary = foreach ($name in $report.Keys) {
     }
 }
 $summaryPath = Join-Path $OutputPath 'machine-info.txt'
-$summary | Set-Content -Path $summaryPath -Encoding UTF8
+Write-Utf8NoBom $summaryPath (($summary -join [Environment]::NewLine) + [Environment]::NewLine)
 
 $totalTimer.Stop()
 $elapsedText = Format-Duration $totalTimer.Elapsed
