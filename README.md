@@ -24,6 +24,9 @@ powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1
 # Skip the pending update search
 powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -SkipUpdateSearch
 
+# Include the full OEM firmware product key
+powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -IncludeProductKey
+
 # Write the results somewhere else
 powershell -ExecutionPolicy Bypass -File .\Get-MachineInfo.ps1 -OutputPath C:\Temp\machine-info
 ```
@@ -34,6 +37,7 @@ Without git, download the script from GitHub and run the same command from the f
 
 - `-OutputPath`: folder where the results are written. Defaults to `machine-info-<COMPUTERNAME>-<timestamp>` next to the script.
 - `-SkipUpdateSearch`: skip the online search for pending Windows updates.
+- `-IncludeProductKey`: include the full OEM firmware product key in the output. By default the script only records whether a firmware key is present and its last five characters.
 
 ### Output
 
@@ -45,4 +49,6 @@ The output folder contains:
 
 If a section fails, the error is recorded in that section and the script continues with the rest.
 
-The output contains serial numbers and the Windows product key. Do not commit or share it publicly. `.gitignore` already excludes `machine-info-*/`.
+The firmware product key is only present on OEM machines that store it in firmware. It is often empty on retail, volume, or digital-license installs.
+
+The output contains serial numbers and the Windows product key (when included). Do not commit or share it publicly. `.gitignore` already excludes `machine-info-*/`.
