@@ -1,0 +1,4 @@
+# winget package IDs (one per line)
+Git.Git
+KeePassXCTeam.KeePassXC
+Brave.Brave
