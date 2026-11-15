@@ -6,11 +6,15 @@ Scripts live under `scripts/`.
 
 ## Terminal UX
 
-Applies to every script, whatever the shell. Follow the current scripts (`scripts/Get-MachineInfo.ps1`, `scripts/Install-WingetApps.ps1`):
+Applies to every script, whatever the shell.
 
-- One aligned, colored status line per step (`[ok]`, `[failed]`, `[skipped]`; Install-WingetApps uses `[installed]` for a successful install) with its timing.
-- A short error line only under a failed step.
-- A colored summary at the end (`Done in ...` in Get-MachineInfo).
+- Start with one header line: the script name.
+- Print one status line per step: a bracketed status (`[ok]`, `[failed]`, `[skipped]`, or a specific verb such as `[installed]`), the step name, and its duration. Keep the columns aligned.
+- Under a failed step, print one short error line. Show raw tool output only when a step fails.
+- End with one summary line: `Done in <duration>   <n> ok   <n> failed   <n> skipped`, or `Done with errors in <duration> ...` when any step failed, followed by `failed: <steps>`.
+- If the script writes files, print `Saved to <full path>`, then one line per file with its size and a short description.
+- Format durations as `5s`, `1m31s`, `1h2m5s`.
+- Colors: green for success and `Done`, red for failures, yellow for `Done with errors`.
 
 ## PowerShell
 
@@ -18,7 +22,7 @@ Applies to every script, whatever the shell. Follow the current scripts (`script
 - **How it runs:** `powershell -ExecutionPolicy Bypass -File .\scripts\<Name>.ps1`
 - **File naming:** official Verb-Noun with an approved verb (see `Get-Verb`), e.g. `Get-MachineInfo.ps1`, `Install-WingetApps.ps1`, `Set-PowerPlan.ps1`, `Clear-TempFiles.ps1`. No version or date in file names.
 - **Help:** comment-based help (`.SYNOPSIS`, `.PARAMETER`, `.EXAMPLE`) so `Get-Help` works.
-- **Line endings:** LF, no BOM (as in the current `.ps1` files), enforced by `.gitattributes`.
+- **Line endings:** LF, no BOM.
 - **Lint:** `Invoke-ScriptAnalyzer -Path scripts -Recurse` must be clean.
 - **Rules:** no ternary / `??`; no `-AsHashtable`; do not rely on `ConvertTo-Json` for dates or single-item arrays; write files with explicit UTF-8 encoding, not `Set-Content` defaults.
 
