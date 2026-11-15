@@ -1,4 +1,4 @@
-# Agent rules
+# AGENTS.md
 
 ## Scripts
 
