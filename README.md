@@ -17,6 +17,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\<Script>.ps1
 
 `-ExecutionPolicy Bypass` applies only to that run and does not change the system policy.
 
+## Scripts
+
 | Script | Description | Docs |
 | --- | --- | --- |
 | Get-MachineInfo.ps1 | Read-only machine inventory | [Get-MachineInfo.md](docs/scripts/Get-MachineInfo.md) |
