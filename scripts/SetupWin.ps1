@@ -9,11 +9,11 @@
     ID does not stop the rest. Prints a short summary at the end.
 
 .PARAMETER AppList
-    Path to the app list. Defaults to apps.txt next to this script.
+    Path to the app list. Defaults to winget-apps.txt next to this script.
     One winget package ID per line. Blank lines and # comments are ignored.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\Install-Apps.ps1
+    powershell -ExecutionPolicy Bypass -File .\scripts\SetupWin.ps1
 #>
 [CmdletBinding()]
 param(
@@ -23,7 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 if (-not $AppList) {
-    $AppList = Join-Path $PSScriptRoot 'apps.txt'
+    $AppList = Join-Path $PSScriptRoot 'winget-apps.txt'
 }
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
