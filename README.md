@@ -1,6 +1,6 @@
 # windows-toolbox
 
-Notes and procedures for Windows, plus scripts in PowerShell and Bash. Scripts live under `scripts/`.
+A toolbox for Windows: how-to notes, troubleshooting guides and scripts.
 
 ## Quick start
 
