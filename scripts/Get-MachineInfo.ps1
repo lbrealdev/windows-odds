@@ -39,15 +39,112 @@ if (-not $OutputPath) {
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
 $report = [ordered]@{}
+$script:okCount = 0
+$script:failedCount = 0
+$script:skippedCount = 0
+$sectionNameWidth = 16
+$totalTimer = [System.Diagnostics.Stopwatch]::StartNew()
+
+function Format-Elapsed {
+    param([TimeSpan]$Elapsed)
+    $sec = [int][Math]::Round($Elapsed.TotalSeconds)
+    if ($sec -ge 60) {
+        '{0}:{1:D2}' -f [int][Math]::Floor($sec / 60), ($sec % 60)
+    } else {
+        '{0}s' -f $sec
+    }
+}
+
+function Write-StatusLine {
+    param(
+        [string]$Tag,
+        [string]$Name,
+        [int]$NameWidth,
+        [string]$Detail,
+        [ConsoleColor]$Color
+    )
+    $tagText = ('[{0}]' -f $Tag).PadRight(11)
+    $nameText = $Name.PadRight($NameWidth)
+    Write-Host ("  {0} {1}  {2}" -f $tagText, $nameText, $Detail) -ForegroundColor $Color
+}
+
+# Win32_QuickFixEngineering.InstalledOn is a locale-dependent string. Get-HotFix
+# wraps it in a ScriptProperty that calls DateTime.Parse and throws on non-US
+# dates. Read the raw CIM value and parse it without using that property.
+function ConvertTo-HotFixInstalledOn {
+    param($Value)
+    try {
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [datetime]) { return [datetime]$Value }
+        $text = "$Value".Trim()
+        if ($text -eq '') { return $null }
+
+        $parsed = [datetime]::MinValue
+        $invariant = [System.Globalization.CultureInfo]::InvariantCulture
+        $styles = [System.Globalization.DateTimeStyles]::AllowWhiteSpaces
+        if ([datetime]::TryParse($text, $invariant, $styles, [ref]$parsed)) {
+            return $parsed
+        }
+        foreach ($fmt in @('M/d/yyyy', 'd/M/yyyy', 'yyyyMMdd')) {
+            if ([datetime]::TryParseExact($text, $fmt, $invariant, $styles, [ref]$parsed)) {
+                return $parsed
+            }
+        }
+
+        $hex = $text
+        if ($hex.StartsWith('0x') -or $hex.StartsWith('0X')) {
+            $hex = $hex.Substring(2)
+        }
+        if ($hex -match '^[0-9A-Fa-f]{8,16}$') {
+            $fileTime = [convert]::ToInt64($hex, 16)
+            return [datetime]::FromFileTime($fileTime)
+        }
+        return $null
+    } catch {
+        return $null
+    }
+}
 
 function Add-Section {
     param([string]$Name, [scriptblock]$Collect)
-    Write-Host "Collecting $Name..."
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $tag = 'ok'
+    $color = [ConsoleColor]::Green
+    $detailExtra = $null
+    $errorText = $null
     try {
-        $report[$Name] = & $Collect
+        $value = & $Collect
+        $report[$Name] = $value
+        if ($value -eq 'No battery') {
+            $tag = 'skipped'
+            $color = [ConsoleColor]::Yellow
+            $detailExtra = 'no battery'
+            $script:skippedCount++
+        } elseif ($value -eq 'Skipped') {
+            $tag = 'skipped'
+            $color = [ConsoleColor]::Yellow
+            $detailExtra = 'skipped'
+            $script:skippedCount++
+        } else {
+            $script:okCount++
+        }
     } catch {
         $report[$Name] = [ordered]@{ Error = $_.Exception.Message }
-        Write-Warning "$Name failed: $($_.Exception.Message)"
+        $tag = 'failed'
+        $color = [ConsoleColor]::Red
+        $errorText = ($_.Exception.Message -split '\r?\n')[0]
+        $script:failedCount++
+    }
+    $timer.Stop()
+    $elapsed = Format-Elapsed $timer.Elapsed
+    if ($detailExtra) {
+        $detail = '{0}  {1}' -f $detailExtra, $elapsed
+    } else {
+        $detail = $elapsed
+    }
+    Write-StatusLine -Tag $tag -Name $Name -NameWidth $sectionNameWidth -Detail $detail -Color $color
+    if ($errorText) {
+        Write-Host ("    {0}" -f $errorText)
     }
 }
 
@@ -63,11 +160,14 @@ function Get-Cim {
     Get-CimInstance @params
 }
 
-Add-Section 'Collected' {
-    [ordered]@{
-        Date              = (Get-Date).ToString('o')
-        PowerShellVersion = $PSVersionTable.PSVersion.ToString()
-    }
+$scriptName = Split-Path -Leaf $PSCommandPath
+if (-not $scriptName) { $scriptName = 'Get-MachineInfo.ps1' }
+Write-Host ("{0}  (read-only)" -f $scriptName)
+Write-Host ''
+
+$report['Collected'] = [ordered]@{
+    Date              = (Get-Date).ToString('o')
+    PowerShellVersion = $PSVersionTable.PSVersion.ToString()
 }
 
 Add-Section 'System' {
@@ -324,18 +424,24 @@ Add-Section 'Security' {
 }
 
 Add-Section 'InstalledUpdates' {
-    @(Get-HotFix | Sort-Object InstalledOn -Descending | ForEach-Object {
-        [ordered]@{
-            Id          = $_.HotFixID
-            Description = $_.Description
-            InstalledOn = $_.InstalledOn
+    $items = foreach ($hf in @(Get-HotFix)) {
+        $raw = $null
+        try {
+            $raw = $hf.CimInstanceProperties['InstalledOn'].Value
+        } catch {
+            $raw = $null
         }
-    })
+        [ordered]@{
+            Id          = $hf.HotFixID
+            Description = $hf.Description
+            InstalledOn = ConvertTo-HotFixInstalledOn $raw
+        }
+    }
+    @($items | Sort-Object { $_['InstalledOn'] } -Descending)
 }
 
 Add-Section 'PendingUpdates' {
     if ($SkipUpdateSearch) { return 'Skipped' }
-    Write-Host '  Searching Windows Update online, this can take a few minutes...'
     $searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
     $result = $searcher.Search('IsInstalled=0 and IsHidden=0')
     @($result.Updates | ForEach-Object {
@@ -394,4 +500,11 @@ $summary = foreach ($name in $report.Keys) {
 $summaryPath = Join-Path $OutputPath 'machine-info.txt'
 $summary | Set-Content -Path $summaryPath -Encoding UTF8
 
-Write-Host "`nDone. Results in: $OutputPath"
+$totalTimer.Stop()
+$summaryColor = [ConsoleColor]::Green
+if ($script:failedCount -gt 0) { $summaryColor = [ConsoleColor]::Red }
+Write-Host ''
+Write-Host ("Ok: {0}  Failed: {1}  Skipped: {2}  {3}" -f $script:okCount, $script:failedCount, $script:skippedCount, (Format-Elapsed $totalTimer.Elapsed)) -ForegroundColor $summaryColor
+Write-Host $OutputPath
+Write-Host '  machine-info.json'
+Write-Host '  machine-info.txt'
