@@ -17,7 +17,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\<Script>.ps1
 
 `-ExecutionPolicy Bypass` applies only to that run and does not change the system policy.
 
-| Script | Shell | What it does | Changes the system | Admin | Docs |
-| --- | --- | --- | --- | --- | --- |
-| Get-MachineInfo.ps1 | PowerShell | Read-only machine inventory | read-only | required | [Get-MachineInfo.md](docs/scripts/Get-MachineInfo.md) |
-| Install-WingetApps.ps1 | PowerShell | Install apps from a winget list | installs apps | not required for most apps | [Install-WingetApps.md](docs/scripts/Install-WingetApps.md) |
+| Script | Description | Docs |
+| --- | --- | --- |
+| Get-MachineInfo.ps1 | Read-only machine inventory | [Get-MachineInfo.md](docs/scripts/Get-MachineInfo.md) |
+| Install-WingetApps.ps1 | Install apps from a winget list | [Install-WingetApps.md](docs/scripts/Install-WingetApps.md) |
