@@ -42,6 +42,7 @@ $report = [ordered]@{}
 $script:okCount = 0
 $script:failedCount = 0
 $script:skippedCount = 0
+$script:failedNames = @()
 $sectionNameWidth = 16
 $totalTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -52,6 +53,22 @@ function Format-Elapsed {
         '{0}:{1:D2}' -f [int][Math]::Floor($sec / 60), ($sec % 60)
     } else {
         '{0}s' -f $sec
+    }
+}
+
+function Format-Duration {
+    param([TimeSpan]$Elapsed)
+    $sec = [int][Math]::Round($Elapsed.TotalSeconds)
+    if ($sec -lt 0) { $sec = 0 }
+    $h = [int][Math]::Floor($sec / 3600)
+    $m = [int][Math]::Floor(($sec % 3600) / 60)
+    $s = $sec % 60
+    if ($h -gt 0) {
+        '{0}h{1}m{2}s' -f $h, $m, $s
+    } elseif ($m -gt 0) {
+        '{0}m{1}s' -f $m, $s
+    } else {
+        '{0}s' -f $s
     }
 }
 
@@ -134,6 +151,7 @@ function Add-Section {
         $color = [ConsoleColor]::Red
         $errorText = ($_.Exception.Message -split '\r?\n')[0]
         $script:failedCount++
+        $script:failedNames += $Name
     }
     $timer.Stop()
     $elapsed = Format-Elapsed $timer.Elapsed
@@ -501,10 +519,42 @@ $summaryPath = Join-Path $OutputPath 'machine-info.txt'
 $summary | Set-Content -Path $summaryPath -Encoding UTF8
 
 $totalTimer.Stop()
-$summaryColor = [ConsoleColor]::Green
-if ($script:failedCount -gt 0) { $summaryColor = [ConsoleColor]::Red }
+$elapsedText = Format-Duration $totalTimer.Elapsed
 Write-Host ''
-Write-Host ("Ok: {0}  Failed: {1}  Skipped: {2}  {3}" -f $script:okCount, $script:failedCount, $script:skippedCount, (Format-Elapsed $totalTimer.Elapsed)) -ForegroundColor $summaryColor
-Write-Host $OutputPath
-Write-Host '  machine-info.json'
-Write-Host '  machine-info.txt'
+if ($script:failedCount -gt 0) {
+    Write-Host 'Done with errors' -ForegroundColor Yellow -NoNewline
+    Write-Host (' in {0}   {1} ok   ' -f $elapsedText, $script:okCount) -NoNewline
+    Write-Host ('{0} failed' -f $script:failedCount) -ForegroundColor Red -NoNewline
+    Write-Host ('   {0} skipped' -f $script:skippedCount)
+    Write-Host ('  failed: {0}  (details in machine-info.txt)' -f ($script:failedNames -join ', '))
+} else {
+    Write-Host 'Done' -ForegroundColor Green -NoNewline
+    Write-Host (' in {0}   {1} ok   {2} failed   {3} skipped' -f $elapsedText, $script:okCount, $script:failedCount, $script:skippedCount)
+}
+
+Write-Host ''
+Write-Host ('Saved to {0}' -f [System.IO.Path]::GetFullPath($OutputPath))
+
+$files = @(Get-ChildItem -LiteralPath $OutputPath -File)
+$txt = @($files | Where-Object { $_.Extension -eq '.txt' } | Sort-Object Name)
+$json = @($files | Where-Object { $_.Extension -eq '.json' } | Sort-Object Name)
+$rest = @($files | Where-Object { $_.Extension -ne '.txt' -and $_.Extension -ne '.json' } | Sort-Object Name)
+$descs = @{
+    'machine-info.txt'    = 'readable summary'
+    'machine-info.json'   = 'full data'
+    'battery-report.html' = 'battery report'
+}
+$rows = @(foreach ($f in @($txt + $json + $rest)) {
+    $kb = [int][Math]::Round($f.Length / 1KB)
+    if ($kb -lt 1) { $kb = 1 }
+    [pscustomobject]@{ Name = $f.Name; Kb = $kb; Desc = $descs[$f.Name] }
+})
+if ($rows.Count -gt 0) {
+    $nameWidth = ($rows | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum
+    $sizeWidth = ($rows | ForEach-Object { $_.Kb.ToString().Length } | Measure-Object -Maximum).Maximum
+    foreach ($row in $rows) {
+        $descPart = ''
+        if ($row.Desc) { $descPart = '   {0}' -f $row.Desc }
+        Write-Host ('  {0}   {1} KB{2}' -f $row.Name.PadRight($nameWidth), $row.Kb.ToString().PadLeft($sizeWidth), $descPart)
+    }
+}
