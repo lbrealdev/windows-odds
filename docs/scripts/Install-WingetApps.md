@@ -1,4 +1,4 @@
-# SetupWin.ps1
+# Install-WingetApps.ps1
 
 Installs the winget packages listed in `scripts/winget-apps.txt` (next to the script). Already installed packages are skipped. A failure for one package does not stop the rest. Elevation is not required for most apps. Each package is reported on one line; winget's own output is shown only if an install fails.
 
@@ -13,10 +13,10 @@ Installs the winget packages listed in `scripts/winget-apps.txt` (next to the sc
 git clone https://github.com/lbrealdev/windows-toolbox.git
 cd windows-toolbox
 
-powershell -ExecutionPolicy Bypass -File .\scripts\SetupWin.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\Install-WingetApps.ps1
 
 # Custom list
-powershell -ExecutionPolicy Bypass -File .\scripts\SetupWin.ps1 -AppList C:\path\to\winget-apps.txt
+powershell -ExecutionPolicy Bypass -File .\scripts\Install-WingetApps.ps1 -AppList C:\path\to\winget-apps.txt
 ```
 
 ## Parameters
