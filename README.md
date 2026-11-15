@@ -46,3 +46,28 @@ The output folder contains:
 If a section fails, the error is recorded in that section and the script continues with the rest.
 
 The output contains serial numbers and the Windows product key. Do not commit or share it publicly. `.gitignore` already excludes `machine-info-*/`.
+
+## Install-Apps.ps1
+
+Installs the winget packages listed in `apps.txt`. Already installed packages are skipped. A failure for one package does not stop the rest. Elevation is not required for most apps.
+
+### Requirements
+
+- Windows PowerShell 5.1 or PowerShell 7+
+- winget (App Installer)
+
+### Usage
+
+```powershell
+git clone https://github.com/lbrealdev/windows-odds.git
+cd windows-odds
+
+powershell -ExecutionPolicy Bypass -File .\Install-Apps.ps1
+
+# Custom list
+powershell -ExecutionPolicy Bypass -File .\Install-Apps.ps1 -AppList C:\path\to\apps.txt
+```
+
+### Adding apps
+
+Edit `apps.txt`: one winget package ID per line. Blank lines and `#` comments are ignored. Find IDs with `winget search <name>`.
