@@ -39,15 +39,130 @@ if (-not $OutputPath) {
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
 $report = [ordered]@{}
+$script:okCount = 0
+$script:failedCount = 0
+$script:skippedCount = 0
+$script:failedNames = @()
+$sectionNameWidth = 16
+$totalTimer = [System.Diagnostics.Stopwatch]::StartNew()
+
+function Format-Elapsed {
+    param([TimeSpan]$Elapsed)
+    $sec = [int][Math]::Round($Elapsed.TotalSeconds)
+    if ($sec -ge 60) {
+        '{0}:{1:D2}' -f [int][Math]::Floor($sec / 60), ($sec % 60)
+    } else {
+        '{0}s' -f $sec
+    }
+}
+
+function Format-Duration {
+    param([TimeSpan]$Elapsed)
+    $sec = [int][Math]::Round($Elapsed.TotalSeconds)
+    if ($sec -lt 0) { $sec = 0 }
+    $h = [int][Math]::Floor($sec / 3600)
+    $m = [int][Math]::Floor(($sec % 3600) / 60)
+    $s = $sec % 60
+    if ($h -gt 0) {
+        '{0}h{1}m{2}s' -f $h, $m, $s
+    } elseif ($m -gt 0) {
+        '{0}m{1}s' -f $m, $s
+    } else {
+        '{0}s' -f $s
+    }
+}
+
+function Write-StatusLine {
+    param(
+        [string]$Tag,
+        [string]$Name,
+        [int]$NameWidth,
+        [string]$Detail,
+        [ConsoleColor]$Color
+    )
+    $tagText = ('[{0}]' -f $Tag).PadRight(11)
+    $nameText = $Name.PadRight($NameWidth)
+    Write-Host ("  {0} {1}  {2}" -f $tagText, $nameText, $Detail) -ForegroundColor $Color
+}
+
+# Win32_QuickFixEngineering.InstalledOn is a locale-dependent string. Get-HotFix
+# wraps it in a ScriptProperty that calls DateTime.Parse and throws on non-US
+# dates. Read the raw CIM value and parse it without using that property.
+function ConvertTo-HotFixInstalledOn {
+    param($Value)
+    try {
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [datetime]) { return [datetime]$Value }
+        $text = "$Value".Trim()
+        if ($text -eq '') { return $null }
+
+        $parsed = [datetime]::MinValue
+        $invariant = [System.Globalization.CultureInfo]::InvariantCulture
+        $styles = [System.Globalization.DateTimeStyles]::AllowWhiteSpaces
+        if ([datetime]::TryParse($text, $invariant, $styles, [ref]$parsed)) {
+            return $parsed
+        }
+        foreach ($fmt in @('M/d/yyyy', 'd/M/yyyy', 'yyyyMMdd')) {
+            if ([datetime]::TryParseExact($text, $fmt, $invariant, $styles, [ref]$parsed)) {
+                return $parsed
+            }
+        }
+
+        $hex = $text
+        if ($hex.StartsWith('0x') -or $hex.StartsWith('0X')) {
+            $hex = $hex.Substring(2)
+        }
+        if ($hex -match '^[0-9A-Fa-f]{8,16}$') {
+            $fileTime = [convert]::ToInt64($hex, 16)
+            return [datetime]::FromFileTime($fileTime)
+        }
+        return $null
+    } catch {
+        return $null
+    }
+}
 
 function Add-Section {
     param([string]$Name, [scriptblock]$Collect)
-    Write-Host "Collecting $Name..."
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $tag = 'ok'
+    $color = [ConsoleColor]::Green
+    $detailExtra = $null
+    $errorText = $null
     try {
-        $report[$Name] = & $Collect
+        $value = & $Collect
+        $report[$Name] = $value
+        if ($value -eq 'No battery') {
+            $tag = 'skipped'
+            $color = [ConsoleColor]::Yellow
+            $detailExtra = 'no battery'
+            $script:skippedCount++
+        } elseif ($value -eq 'Skipped') {
+            $tag = 'skipped'
+            $color = [ConsoleColor]::Yellow
+            $detailExtra = 'skipped'
+            $script:skippedCount++
+        } else {
+            $script:okCount++
+        }
     } catch {
         $report[$Name] = [ordered]@{ Error = $_.Exception.Message }
-        Write-Warning "$Name failed: $($_.Exception.Message)"
+        $tag = 'failed'
+        $color = [ConsoleColor]::Red
+        $errorText = ($_.Exception.Message -split '\r?\n')[0]
+        $script:failedCount++
+        $script:failedNames += $Name
+    }
+    $timer.Stop()
+    $elapsed = Format-Elapsed $timer.Elapsed
+    if ($detailExtra) {
+        $detail = '{0}  {1}' -f $detailExtra, $elapsed
+    } else {
+        $detail = $elapsed
+    }
+    Write-StatusLine -Tag $tag -Name $Name -NameWidth $sectionNameWidth -Detail $detail -Color $color
+    if ($errorText) {
+        Write-Host ("    {0}" -f $errorText)
     }
 }
 
@@ -262,11 +377,14 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding $false))
 }
 
-Add-Section 'Collected' {
-    [ordered]@{
-        Date              = (Get-Date).ToString('o')
-        PowerShellVersion = $PSVersionTable.PSVersion.ToString()
-    }
+$scriptName = Split-Path -Leaf $PSCommandPath
+if (-not $scriptName) { $scriptName = 'Get-MachineInfo.ps1' }
+Write-Host ("{0}  (read-only)" -f $scriptName)
+Write-Host ''
+
+$report['Collected'] = [ordered]@{
+    Date              = (Get-Date).ToString('o')
+    PowerShellVersion = $PSVersionTable.PSVersion.ToString()
 }
 
 Add-Section 'System' {
@@ -535,18 +653,24 @@ Add-Section 'Security' {
 }
 
 Add-Section 'InstalledUpdates' {
-    ,@(Get-HotFix | Sort-Object InstalledOn -Descending | ForEach-Object {
-        [ordered]@{
-            Id          = $_.HotFixID
-            Description = $_.Description
-            InstalledOn = $_.InstalledOn
+    $items = foreach ($hf in @(Get-HotFix)) {
+        $raw = $null
+        try {
+            $raw = $hf.CimInstanceProperties['InstalledOn'].Value
+        } catch {
+            $raw = $null
         }
-    })
+        [ordered]@{
+            Id          = $hf.HotFixID
+            Description = $hf.Description
+            InstalledOn = ConvertTo-HotFixInstalledOn $raw
+        }
+    }
+    , @($items | Sort-Object { $_['InstalledOn'] } -Descending)
 }
 
 Add-Section 'PendingUpdates' {
     if ($SkipUpdateSearch) { return 'Skipped' }
-    Write-Host '  Searching Windows Update online, this can take a few minutes...'
     $searcher = (New-Object -ComObject Microsoft.Update.Session).CreateUpdateSearcher()
     $result = $searcher.Search('IsInstalled=0 and IsHidden=0')
     ,@($result.Updates | ForEach-Object {
@@ -599,4 +723,43 @@ $summary = foreach ($name in $report.Keys) {
 $summaryPath = Join-Path $OutputPath 'machine-info.txt'
 Write-Utf8NoBom $summaryPath (($summary -join [Environment]::NewLine) + [Environment]::NewLine)
 
-Write-Host "`nDone. Results in: $OutputPath"
+$totalTimer.Stop()
+$elapsedText = Format-Duration $totalTimer.Elapsed
+Write-Host ''
+if ($script:failedCount -gt 0) {
+    Write-Host 'Done with errors' -ForegroundColor Yellow -NoNewline
+    Write-Host (' in {0}   {1} ok   ' -f $elapsedText, $script:okCount) -NoNewline
+    Write-Host ('{0} failed' -f $script:failedCount) -ForegroundColor Red -NoNewline
+    Write-Host ('   {0} skipped' -f $script:skippedCount)
+    Write-Host ('  failed: {0}  (details in machine-info.txt)' -f ($script:failedNames -join ', '))
+} else {
+    Write-Host 'Done' -ForegroundColor Green -NoNewline
+    Write-Host (' in {0}   {1} ok   {2} failed   {3} skipped' -f $elapsedText, $script:okCount, $script:failedCount, $script:skippedCount)
+}
+
+Write-Host ''
+Write-Host ('Saved to {0}' -f [System.IO.Path]::GetFullPath($OutputPath))
+
+$files = @(Get-ChildItem -LiteralPath $OutputPath -File)
+$txt = @($files | Where-Object { $_.Extension -eq '.txt' } | Sort-Object Name)
+$json = @($files | Where-Object { $_.Extension -eq '.json' } | Sort-Object Name)
+$rest = @($files | Where-Object { $_.Extension -ne '.txt' -and $_.Extension -ne '.json' } | Sort-Object Name)
+$descs = @{
+    'machine-info.txt'    = 'readable summary'
+    'machine-info.json'   = 'full data'
+    'battery-report.html' = 'battery report'
+}
+$rows = @(foreach ($f in @($txt + $json + $rest)) {
+    $kb = [int][Math]::Round($f.Length / 1KB)
+    if ($kb -lt 1) { $kb = 1 }
+    [pscustomobject]@{ Name = $f.Name; Kb = $kb; Desc = $descs[$f.Name] }
+})
+if ($rows.Count -gt 0) {
+    $nameWidth = ($rows | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum
+    $sizeWidth = ($rows | ForEach-Object { $_.Kb.ToString().Length } | Measure-Object -Maximum).Maximum
+    foreach ($row in $rows) {
+        $descPart = ''
+        if ($row.Desc) { $descPart = '   {0}' -f $row.Desc }
+        Write-Host ('  {0}   {1} KB{2}' -f $row.Name.PadRight($nameWidth), $row.Kb.ToString().PadLeft($sizeWidth), $descPart)
+    }
+}
